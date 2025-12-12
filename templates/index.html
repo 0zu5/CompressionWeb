@@ -2,21 +2,21 @@
 <html>
 
 <head>
-    <title>Secure Presentation Demo</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>E2EE Relay Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
-            font-family: monospace;
             background: #111;
-            color: #0f0;
-            margin: 0;
-            padding: 5px;
+            color: white;
+            font-family: monospace;
             text-align: center;
+            margin: 0;
         }
 
         /* Video Area */
         #remoteVideo {
             width: 100%;
+            max-width: 600px;
             border: 2px solid #333;
             background: #000;
             min-height: 200px;
@@ -27,28 +27,49 @@
             position: fixed;
             bottom: 10px;
             right: 10px;
-            border: 1px solid #fff;
+            border: 1px solid white;
+            z-index: 10;
         }
 
-        /* Demo Dashboard */
-        .dashboard {
+        /* Setup Screen */
+        #setup {
+            padding: 20px;
+        }
+
+        input {
+            padding: 10px;
+            width: 200px;
+            border-radius: 5px;
+            border: none;
+        }
+
+        .btn-join {
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            font-weight: bold;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        /* Controls */
+        .controls {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
-            margin-top: 10px;
             padding: 10px;
-            background: #222;
-            border-radius: 8px;
+            max-width: 600px;
+            margin: 0 auto;
         }
 
         button {
             padding: 15px;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
             border: none;
             border-radius: 5px;
+            font-weight: bold;
             color: white;
+            cursor: pointer;
         }
 
         .btn-lag {
@@ -59,206 +80,156 @@
             background: #5bc0de;
         }
 
-        .btn-spy {
-            background: #f0ad4e;
-        }
-
-        .btn-key {
-            background: #5cb85c;
-        }
-
-        .stats-box {
-            grid-column: span 2;
-            background: #000;
-            padding: 10px;
-            border: 1px solid #444;
-            text-align: left;
+        .stats {
+            font-size: 0.9rem;
+            color: #aaa;
+            margin-top: 5px;
         }
     </style>
 </head>
 
 <body>
-    <h3>AES-GCM Secure Video</h3>
-    <img id="remoteVideo" />
-    <video id="localVideo" autoplay playsinline muted></video>
-    <canvas id="compressor" style="display:none;"></canvas>
+    <h3>🔐 End-to-End Encrypted Relay</h3>
 
-    <div class="dashboard">
-        <div class="stats-box">
-            <div>STATUS: <span id="status">Connecting...</span></div>
-            <div>COMPRESSION: <span id="qualStat">85</span>%</div>
-            <div>RESOLUTION: <span id="resStat">Original</span></div>
-            <div>PACKET SIZE: <span id="sizeStat">0</span> bytes</div>
-        </div>
-
-        <button class="btn-lag" onclick="simulateLag()">⚠️ FORCE LAG</button>
-        <button class="btn-fix" onclick="fixNetwork()">🚀 FIX NET</button>
-        <button class="btn-spy" onclick="toggleSpyMode()">🕵️ SPY VIEW</button>
-        <button class="btn-key" onclick="fixKey()">🔑 CORRECT KEY</button>
+    <div id="setup">
+        <p>Enter Shared Secret to start:</p>
+        <input type="text" id="secretKey" placeholder="e.g. 'secret123'">
+        <br>
+        <button class="btn-join" onclick="startCall()">JOIN SECURE CALL</button>
     </div>
 
-    <script>
-        // CONFIG
-        const CORRECT_KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        const WRONG_KEY_HEX = "aaabbbcccdddeeefff00112233445566778899aabbccddeeff00112233445566"; // Garbage Key
+    <div id="callArea" style="display:none;">
+        <img id="remoteVideo" />
+        <video id="localVideo" autoplay playsinline muted></video>
 
+        <div class="stats">
+            STATUS: <span id="status" style="color:orange">Waiting...</span><br>
+            QUALITY: <span id="qVal">85</span>%
+        </div>
+
+        <div class="controls">
+            <button class="btn-lag" onclick="forceLag()">⚠️ FORCE LAG</button>
+            <button class="btn-fix" onclick="fixNetwork()">🚀 FIX NET</button>
+        </div>
+    </div>
+
+    <canvas id="compressor" style="display:none;"></canvas>
+
+    <script>
         let ws;
         let aesKey;
         let quality = 0.85;
-        let currentKeyHex = CORRECT_KEY_HEX;
-        let spyMode = false; // If true, we show raw encrypted "garbage" (simulated)
+        let manualOverride = false; // Prevents server from fixing the lag
 
-        async function importKey(hex) {
-            const keyBytes = new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-            return await window.crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt", "decrypt"]);
+        async function startCall() {
+            const secret = document.getElementById('secretKey').value;
+            if (secret.length < 1) return alert("Please enter a secret key!");
+
+            // Derive Key (PBKDF2)
+            const enc = new TextEncoder();
+            const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(secret), "PBKDF2", false, ["deriveKey"]);
+            aesKey = await window.crypto.subtle.deriveKey(
+                { name: "PBKDF2", salt: enc.encode("salt"), iterations: 100000, hash: "SHA-256" },
+                keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
+            );
+
+            document.getElementById('setup').style.display = 'none';
+            document.getElementById('callArea').style.display = 'block';
+            initMedia();
         }
 
-        async function init() {
-            aesKey = await importKey(CORRECT_KEY_HEX);
-
-            const localVid = document.getElementById('localVideo');
+        async function initMedia() {
             const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360, facingMode: "user" } });
-            localVid.srcObject = stream;
+            document.getElementById('localVideo').srcObject = stream;
 
-            connectWebSocket();
-        }
-
-        function connectWebSocket() {
             ws = new WebSocket("wss://" + location.host + "/ws");
             ws.binaryType = "arraybuffer";
 
-            ws.onopen = () => {
-                document.getElementById('status').innerText = "SECURE LINK ESTABLISHED";
-                sendFrameLoop();
-            };
-
             ws.onmessage = async (msg) => {
-                if (msg.data instanceof ArrayBuffer) {
-                    document.getElementById('sizeStat').innerText = msg.data.byteLength;
+                // 1. HANDLE TEXT COMMANDS (Server Feedback)
+                if (typeof msg.data === "string") {
+                    if (manualOverride) return; // Ignore server if user forced lag
 
-                    if (spyMode) {
-                        // DEMO: Show "Hacker View" (Raw Noise)
-                        // We generate static noise to represent what the hacker sees
-                        showStaticNoise();
-                        return;
+                    if (msg.data === "ADAPT:LOW") {
+                        quality = Math.max(0.1, quality - 0.1);
+                    } else if (msg.data === "ADAPT:HIGH") {
+                        quality = Math.min(0.9, quality + 0.05);
+                    } else if (msg.data.startsWith("STATUS:")) {
+                        const statusText = msg.data.split(":")[1];
+                        const el = document.getElementById('status');
+                        el.innerText = statusText;
+                        if (statusText.includes("Connected")) el.style.color = "#0f0";
                     }
-
-                    try {
-                        const encryptedBytes = new Uint8Array(msg.data);
-                        const nonce = encryptedBytes.slice(0, 12);
-                        const tag = encryptedBytes.slice(12, 28);
-                        const ciphertext = encryptedBytes.slice(28);
-
-                        const decryptBuffer = new Uint8Array(ciphertext.length + tag.length);
-                        decryptBuffer.set(ciphertext, 0);
-                        decryptBuffer.set(tag, ciphertext.length);
-
-                        const decrypted = await window.crypto.subtle.decrypt(
-                            { name: "AES-GCM", iv: nonce },
-                            aesKey,
-                            decryptBuffer
-                        );
-
-                        const blob = new Blob([decrypted], { type: 'image/jpeg' });
-                        document.getElementById('remoteVideo').src = URL.createObjectURL(blob);
-
-                    } catch (err) {
-                        // Decryption Failed (Wrong Key Demo)
-                        console.error("Decryption Failed!");
-                        document.getElementById('status').innerText = "⛔ DECRYPTION FAILED (WRONG KEY)";
-                        document.getElementById('status').style.color = "red";
-                    }
+                    document.getElementById('qVal').innerText = Math.round(quality * 100);
+                    return;
                 }
+
+                // 2. HANDLE VIDEO (Decrypt)
+                try {
+                    const encryptedBytes = new Uint8Array(msg.data);
+                    const iv = encryptedBytes.slice(0, 12);
+                    const data = encryptedBytes.slice(12);
+
+                    const decrypted = await window.crypto.subtle.decrypt(
+                        { name: "AES-GCM", iv: iv }, aesKey, data
+                    );
+                    const blob = new Blob([decrypted], { type: 'image/jpeg' });
+                    document.getElementById('remoteVideo').src = URL.createObjectURL(blob);
+                } catch (e) { console.error("Decrypt Error", e); }
             };
+
+            ws.onopen = () => sendLoop();
         }
 
-        // --- SENDER LOOP ---
-        function sendFrameLoop() {
-            if (ws.readyState !== WebSocket.OPEN) return;
+        function sendLoop() {
+            if (ws.readyState !== 1) return;
             const video = document.getElementById('localVideo');
             const canvas = document.getElementById('compressor');
             const ctx = canvas.getContext('2d');
 
             if (video.videoWidth > 0) {
-                // Adaptive Resolution Logic
-                let scale = 0.5;
-                if (quality < 0.3) scale = 0.2; // Blocky
-                else if (quality < 0.6) scale = 0.35;
-
+                // Adaptive Scaling
+                const scale = quality > 0.5 ? 0.5 : 0.25;
                 canvas.width = video.videoWidth * scale;
                 canvas.height = video.videoHeight * scale;
-
-                // Update Stats
-                document.getElementById('resStat').innerText = `${canvas.width}x${canvas.height}`;
-                document.getElementById('qualStat').innerText = Math.round(quality * 100);
 
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
                 canvas.toBlob(async (blob) => {
-                    if (!blob) return;
-                    const rawBytes = new Uint8Array(await blob.arrayBuffer());
+                    const raw = new Uint8Array(await blob.arrayBuffer());
                     const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                    const encryptedContent = await window.crypto.subtle.encrypt(
-                        { name: "AES-GCM", iv: iv },
-                        aesKey,
-                        rawBytes
+                    const encrypted = await window.crypto.subtle.encrypt(
+                        { name: "AES-GCM", iv: iv }, aesKey, raw
                     );
-                    const encryptedBytes = new Uint8Array(encryptedContent);
-                    const tag = encryptedBytes.slice(encryptedBytes.length - 16);
-                    const cipher = encryptedBytes.slice(0, encryptedBytes.length - 16);
-                    const packet = new Uint8Array(iv.length + tag.length + cipher.length);
-                    packet.set(iv, 0);
-                    packet.set(tag, 12);
-                    packet.set(cipher, 28);
-                    ws.send(packet);
-                    setTimeout(() => requestAnimationFrame(sendFrameLoop), 50);
+
+                    const p = new Uint8Array(iv.length + encrypted.byteLength);
+                    p.set(iv, 0);
+                    p.set(new Uint8Array(encrypted), 12);
+
+                    ws.send(p);
+                    setTimeout(() => requestAnimationFrame(sendLoop), 50);
                 }, 'image/jpeg', quality);
             } else {
-                requestAnimationFrame(sendFrameLoop);
+                requestAnimationFrame(sendLoop);
             }
         }
 
-        // --- DEMO FUNCTIONS ---
-        function simulateLag() {
+        // --- DEMO CONTROLS ---
+        function forceLag() {
+            manualOverride = true;
             quality = 0.1; // Drop to 10%
-            document.getElementById('status').innerText = "⚠️ NETWORK LAG DETECTED";
-            document.getElementById('status').style.color = "orange";
-        }
-        function fixNetwork() {
-            quality = 0.85; // Restore to 85%
-            document.getElementById('status').innerText = "✅ NETWORK STABLE";
-            document.getElementById('status').style.color = "#0f0";
-        }
-        async function toggleSpyMode() {
-            spyMode = !spyMode;
-            // Also switch key to garbage to simulate "Man in the middle who doesn't have the key"
-            if (spyMode) {
-                aesKey = await importKey(WRONG_KEY_HEX);
-                document.getElementById('status').innerText = "🕵️ ATTACKER VIEW (NO KEY)";
-                document.getElementById('status').style.color = "red";
-            } else {
-                fixKey();
-            }
-        }
-        async function fixKey() {
-            spyMode = false;
-            aesKey = await importKey(CORRECT_KEY_HEX);
-            document.getElementById('status').innerText = "✅ SECURE CONNECTION";
-            document.getElementById('status').style.color = "#0f0";
-        }
-        function showStaticNoise() {
-            // Generates visual "Encryption Noise"
-            const canvas = document.createElement('canvas');
-            canvas.width = 320; canvas.height = 240;
-            const ctx = canvas.getContext('2d');
-            const idata = ctx.createImageData(320, 240);
-            const buffer32 = new Uint32Array(idata.data.buffer);
-            for (let i = 0; i < buffer32.length; i++) buffer32[i] = Math.random() * 0xFFFFFFFF;
-            ctx.putImageData(idata, 0, 0);
-            document.getElementById('remoteVideo').src = canvas.toDataURL();
+            document.getElementById('qVal').innerText = "10";
+            document.getElementById('status').innerText = "⚠️ SIMULATED LAG";
+            document.getElementById('status').style.color = "red";
         }
 
-        init();
+        function fixNetwork() {
+            manualOverride = false;
+            quality = 0.85; // Restore
+            document.getElementById('qVal').innerText = "85";
+            document.getElementById('status').innerText = "✅ Network Stable";
+            document.getElementById('status').style.color = "#0f0";
+        }
     </script>
 </body>
 

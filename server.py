@@ -2,99 +2,82 @@ import cv2
 import numpy as np
 import uvicorn
 import asyncio
-from fastapi import FastAPI, WebSocket, Request, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
-from contextlib import asynccontextmanager
 import threading
 import queue
-import math
+import socket
+import qrcode # pip install "qrcode[pil]"
 
-# --- IMPORTS ---
-from security import VideoEncryptor
-from video_engine import AdaptiveVideoEngine
-
-# --- GLOBAL RESOURCES ---
-GLOBAL_CAMERA = None
-CAMERA_LOCK = threading.Lock()
+# --- CONFIG ---
+# The server GUI Queue to show status/QR
 gui_queue = queue.Queue()
+connected_count = 0
 
-# Store the latest frame from EACH client: { client_id: frame_image }
-client_frames = {} 
+# --- HELPER FUNCTIONS ---
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
-# --- SECURITY ---
-PRE_SHARED_KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-GLOBAL_AES_KEY = bytes.fromhex(PRE_SHARED_KEY_HEX)
+def generate_qr_overlay(ip, port):
+    url = f"https://{ip}:{port}"
+    print(f"[System] Server URL: {url}")
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    img_np = np.array(img.convert('RGB'))
+    return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
 # --- CONNECTION MANAGER ---
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
-        self.lock = asyncio.Lock()
+        self.pairings = {}
+        self.waiting_user = None
 
     async def connect(self, websocket: WebSocket):
+        global connected_count
         await websocket.accept()
-        async with self.lock:
-            self.active_connections.append(websocket)
-            print(f"[System] New Client Connected. Total: {len(self.active_connections)}")
+        connected_count += 1
+        gui_queue.put("UPDATE")
+        
+        if self.waiting_user is None:
+            self.waiting_user = websocket
+            await websocket.send_text("STATUS:Waiting for partner...")
+        else:
+            partner = self.waiting_user
+            self.pairings[websocket] = partner
+            self.pairings[partner] = websocket
+            self.waiting_user = None
+            await websocket.send_text("STATUS:Connected!")
+            await partner.send_text("STATUS:Connected!")
 
-    async def disconnect(self, websocket: WebSocket):
-        async with self.lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
-                print(f"[System] Client Disconnected. Total: {len(self.active_connections)}")
+    def get_partner(self, websocket: WebSocket):
+        return self.pairings.get(websocket)
 
-    async def broadcast(self, message: bytes):
-        """Sends a message to ALL connected clients."""
-        # Copy list to avoid modification errors during iteration
-        async with self.lock:
-            connections = self.active_connections[:]
-            
-        for connection in connections:
-            try:
-                await connection.send_bytes(message)
-            except:
-                pass # Dead connections are handled in the receive loop
+    def disconnect(self, websocket: WebSocket):
+        global connected_count
+        partner = self.pairings.get(websocket)
+        if partner:
+            del self.pairings[partner]
+            asyncio.create_task(partner.send_text("STATUS:Partner Disconnected"))
+        if websocket in self.pairings:
+            del self.pairings[websocket]
+        if self.waiting_user == websocket:
+            self.waiting_user = None
+        
+        connected_count -= 1
+        gui_queue.put("UPDATE")
 
 manager = ConnectionManager()
-
-# --- LIFESPAN (Startup/Shutdown) ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 1. Start Camera
-    global GLOBAL_CAMERA
-    print("\n[System] Opening Conference Camera...")
-    try:
-        GLOBAL_CAMERA = AdaptiveVideoEngine(camera_index=0)
-    except:
-        GLOBAL_CAMERA = AdaptiveVideoEngine(camera_index=1)
-    
-    # 2. Start Broadcaster Task (One task feeds ALL phones)
-    encryptor = VideoEncryptor(GLOBAL_AES_KEY)
-    broadcast_task = asyncio.create_task(broadcast_camera_loop(encryptor))
-
-    yield 
-    
-    # 3. Cleanup
-    broadcast_task.cancel()
-    if GLOBAL_CAMERA: GLOBAL_CAMERA.cleanup()
-    print("[System] Server Shutdown.")
-
-app = FastAPI(lifespan=lifespan)
-
-async def broadcast_camera_loop(encryptor):
-    """Captures ONE frame -> Encrypts ONCE -> Sends to ALL clients."""
-    print("[Broadcaster] Started.")
-    while True:
-        frame_bytes = None
-        if GLOBAL_CAMERA:
-            with CAMERA_LOCK:
-                frame_bytes = GLOBAL_CAMERA.get_processed_frame()
-        
-        if frame_bytes:
-            encrypted_packet = encryptor.encrypt_frame(frame_bytes)
-            await manager.broadcast(encrypted_packet)
-        
-        await asyncio.sleep(0.033) # 30 FPS cap
+app = FastAPI()
 
 @app.get("/")
 async def get(request: Request):
@@ -104,101 +87,83 @@ async def get(request: Request):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    
-    # Assign a temporary ID for this connection (memory address is easiest unique ID)
-    client_id = id(websocket)
-    
-    decryptor = VideoEncryptor(GLOBAL_AES_KEY)
-    
     try:
         while True:
+            # 1. Receive Encrypted Data
             data = await websocket.receive_bytes()
-            decrypted_frame = decryptor.decrypt_frame(data)
             
-            if decrypted_frame:
-                nparr = np.frombuffer(decrypted_frame, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            # 2. Relay to Partner
+            partner = manager.get_partner(websocket)
+            if partner:
+                await partner.send_bytes(data)
                 
-                if img is not None:
-                    # Store this client's latest frame in the global dictionary
-                    client_frames[client_id] = img
-                    # Notify GUI to redraw
-                    if gui_queue.empty(): gui_queue.put("REDRAW")
+                # 3. Adaptive Logic (Server Brain)
+                # If packet > 40KB, tell sender to compress more
+                if len(data) > 40000: 
+                    await websocket.send_text("ADAPT:LOW")
+                elif len(data) < 10000:
+                    await websocket.send_text("ADAPT:HIGH")
 
     except WebSocketDisconnect:
-        await manager.disconnect(websocket)
-        # Remove their video from the screen
-        if client_id in client_frames:
-            del client_frames[client_id]
-
-def create_grid(frames_dict, target_size=(320, 240)):
-    """Stitches multiple images into a grid."""
-    images = list(frames_dict.values())
-    count = len(images)
-    
-    if count == 0:
-        # Return a black "Waiting" screen
-        blank = np.zeros((480, 640, 3), np.uint8)
-        cv2.putText(blank, "Waiting for callers...", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        return blank
-
-    # Resize all to uniform size
-    resized_imgs = [cv2.resize(img, target_size) for img in images]
-    
-    # Calculate grid dimensions (e.g., 2 items -> 2x1, 3 items -> 2x2)
-    cols = math.ceil(math.sqrt(count))
-    rows = math.ceil(count / cols)
-    
-    # Create empty canvas
-    grid_h = rows * target_size[1]
-    grid_w = cols * target_size[0]
-    canvas = np.zeros((grid_h, grid_w, 3), np.uint8)
-    
-    for i, img in enumerate(resized_imgs):
-        r = i // cols
-        c = i % cols
-        y = r * target_size[1]
-        x = c * target_size[0]
-        canvas[y:y+target_size[1], x:x+target_size[0]] = img
-        
-    return canvas
+        manager.disconnect(websocket)
 
 def run_gui_loop():
-    window_name = "Conference View (Laptop)"
+    window_name = "Secure Relay Server"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 640, 480)
     
-    print("[GUI] Waiting for connections...")
+    # Generate QR Code
+    local_ip = get_local_ip()
+    try:
+        qr_img = generate_qr_overlay(local_ip, 8000)
+        qr_h, qr_w, _ = qr_img.shape
+    except:
+        qr_img = None
+
+    print(f"[GUI] Scan QR to join: https://{local_ip}:8000")
+
     while True:
         try:
-            # Wait for a trigger (don't need data, just a wake-up signal)
-            _ = gui_queue.get(timeout=0.1)
+            while not gui_queue.empty(): _ = gui_queue.get_nowait()
+        except queue.Empty: pass
+
+        # DRAW GUI
+        if connected_count >= 2:
+            # Show "Traffic Flow" Mode
+            display_img = np.zeros((480, 640, 3), np.uint8)
+            cv2.putText(display_img, "SECURE RELAY ACTIVE", (140, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(display_img, f"Users Connected: {connected_count}", (200, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+            cv2.putText(display_img, "(Server is Blind to Video)", (180, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+        else:
+            # Show QR Code
+            display_img = np.full((480, 640, 3), 255, dtype=np.uint8)
+            cv2.putText(display_img, "Scan to Join E2EE Call:", (150, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 2)
+            if connected_count == 1:
+                 cv2.putText(display_img, "1 User Waiting...", (200, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
             
-            # Build the grid from whatever is in client_frames
-            # We use .copy() to avoid thread errors if dictionary changes size during read
-            current_frames = client_frames.copy()
-            grid_img = create_grid(current_frames)
-            
-            cv2.imshow(window_name, grid_img)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'): break
-        except queue.Empty:
-            pass
-            
+            if qr_img is not None:
+                y_o, x_o = (480 - qr_h) // 2, (640 - qr_w) // 2
+                if y_o >= 0 and x_o >= 0:
+                     display_img[y_o:y_o+qr_h, x_o:x_o+qr_w] = qr_img
+
+        cv2.imshow(window_name, display_img)
+        if cv2.waitKey(100) & 0xFF == ord('q'): break
+
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
+    # Start Server in Background
     server_thread = threading.Thread(
         target=uvicorn.run, 
         args=(app,), 
         kwargs={
-            "host": "0.0.0.0", 
-            "port": 8000, 
-            "ssl_keyfile": "key.pem", 
-            "ssl_certfile": "cert.pem",
+            "host": "0.0.0.0", "port": 8000, 
+            "ssl_keyfile": "key.pem", "ssl_certfile": "cert.pem",
             "log_level": "error"
         }, 
         daemon=True
     )
     server_thread.start()
     
+    # Run GUI
     run_gui_loop()
