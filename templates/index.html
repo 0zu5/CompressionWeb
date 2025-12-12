@@ -1,125 +1,256 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>E2EE Relay Demo</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AES-GCM Secure Relay</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
     <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --primary: #3b82f6;
+            --danger: #ef4444;
+            --success: #22c55e;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+        }
+
         body {
-            background: #111;
-            color: white;
-            font-family: monospace;
-            text-align: center;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
         }
 
-        /* Video Area */
-        #remoteVideo {
-            width: 100%;
-            max-width: 600px;
-            border: 2px solid #333;
-            background: #000;
-            min-height: 200px;
+        h3 {
+            margin: 20px 0 10px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            font-size: 0.9rem;
+            color: var(--text-sub);
         }
 
-        #localVideo {
-            width: 80px;
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            border: 1px solid white;
-            z-index: 10;
-        }
-
-        /* Setup Screen */
+        /* --- LOGIN CARD --- */
         #setup {
-            padding: 20px;
+            background: var(--card-bg);
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            margin-top: 20vh;
+            width: 90%;
+            max-width: 350px;
         }
 
         input {
-            padding: 10px;
-            width: 200px;
-            border-radius: 5px;
-            border: none;
+            width: 100%;
+            padding: 12px;
+            margin: 15px 0;
+            border-radius: 8px;
+            border: 1px solid #475569;
+            background: #0f172a;
+            color: white;
+            font-size: 1rem;
+            box-sizing: border-box;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input:focus {
+            border-color: var(--primary);
         }
 
         .btn-join {
-            padding: 10px 20px;
-            background: #28a745;
+            width: 100%;
+            padding: 12px;
+            background: var(--primary);
             color: white;
             border: none;
-            font-weight: bold;
-            border-radius: 5px;
-            margin-top: 10px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: transform 0.1s;
         }
 
-        /* Controls */
+        .btn-join:active {
+            transform: scale(0.98);
+        }
+
+        /* --- CALL UI --- */
+        #callArea {
+            display: none;
+            width: 100%;
+            max-width: 800px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 4/3;
+            background: black;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+            border: 1px solid #334155;
+        }
+
+        #remoteVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            /* Ensures video isn't stretched */
+        }
+
+        #localVideo {
+            position: absolute;
+            bottom: 15px;
+            right: 15px;
+            width: 25%;
+            /* Responsive PIP */
+            max-width: 120px;
+            border-radius: 8px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        /* --- HUD / STATS --- */
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--card-bg);
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid #334155;
+        }
+
+        .status-badge {
+            font-size: 0.8rem;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        .status-wait {
+            background: #ca8a04;
+            color: #fff;
+        }
+
+        .status-ok {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--success);
+        }
+
+        .status-err {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--danger);
+        }
+
+        .stat-item {
+            font-size: 0.9rem;
+            color: var(--text-sub);
+        }
+
+        .stat-value {
+            color: var(--text-main);
+            font-weight: bold;
+            font-family: monospace;
+            font-size: 1.1rem;
+        }
+
+        /* --- CONTROLS --- */
         .controls {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            padding: 10px;
-            max-width: 600px;
-            margin: 0 auto;
+            gap: 12px;
+            margin-top: 15px;
         }
 
-        button {
+        .btn-ctrl {
             padding: 15px;
             border: none;
-            border-radius: 5px;
-            font-weight: bold;
+            border-radius: 10px;
+            font-weight: 700;
             color: white;
+            font-size: 0.9rem;
             cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: opacity 0.2s;
         }
 
         .btn-lag {
-            background: #d9534f;
+            background: var(--danger);
         }
 
         .btn-fix {
-            background: #5bc0de;
+            background: var(--success);
         }
 
-        .stats {
-            font-size: 0.9rem;
-            color: #aaa;
-            margin-top: 5px;
+        .btn-ctrl:active {
+            opacity: 0.8;
         }
     </style>
 </head>
 
 <body>
-    <h3>🔐 End-to-End Encrypted Relay</h3>
 
     <div id="setup">
-        <p>Enter Shared Secret to start:</p>
-        <input type="text" id="secretKey" placeholder="e.g. 'secret123'">
-        <br>
-        <button class="btn-join" onclick="startCall()">JOIN SECURE CALL</button>
+        <h2 style="margin: 0 0 20px; color:white;">🔐 Secure Login</h2>
+        <p style="color: var(--text-sub); font-size: 0.9rem;">Enter shared secret to join E2EE Relay</p>
+        <input type="text" id="secretKey" placeholder="e.g. secret123" autocomplete="off">
+        <button class="btn-join" onclick="startCall()">JOIN CHANNEL</button>
     </div>
 
-    <div id="callArea" style="display:none;">
-        <img id="remoteVideo" />
-        <video id="localVideo" autoplay playsinline muted></video>
+    <div id="callArea">
+        <h3>Encrypted Feed (AES-GCM)</h3>
 
-        <div class="stats">
-            STATUS: <span id="status" style="color:orange">Waiting...</span><br>
-            QUALITY: <span id="qVal">85</span>%
+        <div class="video-wrapper">
+            <img id="remoteVideo" alt="Waiting for stream..." />
+            <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+
+        <div class="hud">
+            <div>
+                <div class="stat-item">STATUS</div>
+                <div id="statusBadge" class="status-badge status-wait">WAITING</div>
+            </div>
+            <div style="text-align: right;">
+                <div class="stat-item">QUALITY</div>
+                <div><span id="qVal" class="stat-value">85</span><span style="font-size:0.8rem">%</span></div>
+            </div>
         </div>
 
         <div class="controls">
-            <button class="btn-lag" onclick="forceLag()">⚠️ FORCE LAG</button>
-            <button class="btn-fix" onclick="fixNetwork()">🚀 FIX NET</button>
+            <button class="btn-ctrl btn-lag" onclick="forceLag()">
+                <span>⚠️</span> FORCE LAG
+            </button>
+            <button class="btn-ctrl btn-fix" onclick="fixNetwork()">
+                <span>🚀</span> FIX NETWORK
+            </button>
         </div>
     </div>
 
     <canvas id="compressor" style="display:none;"></canvas>
 
     <script>
+        // --- LOGIC SAME AS BEFORE ---
         let ws;
         let aesKey;
         let quality = 0.85;
-        let manualOverride = false; // Prevents server from fixing the lag
+        let manualOverride = false;
 
         async function startCall() {
             const secret = document.getElementById('secretKey').value;
@@ -139,16 +270,21 @@
         }
 
         async function initMedia() {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360, facingMode: "user" } });
-            document.getElementById('localVideo').srcObject = stream;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360, facingMode: "user" } });
+                document.getElementById('localVideo').srcObject = stream;
+            } catch (e) {
+                alert("Camera Error: " + e.message);
+                return;
+            }
 
             ws = new WebSocket("wss://" + location.host + "/ws");
             ws.binaryType = "arraybuffer";
 
             ws.onmessage = async (msg) => {
-                // 1. HANDLE TEXT COMMANDS (Server Feedback)
+                // HANDLE COMMANDS
                 if (typeof msg.data === "string") {
-                    if (manualOverride) return; // Ignore server if user forced lag
+                    if (manualOverride) return;
 
                     if (msg.data === "ADAPT:LOW") {
                         quality = Math.max(0.1, quality - 0.1);
@@ -156,15 +292,13 @@
                         quality = Math.min(0.9, quality + 0.05);
                     } else if (msg.data.startsWith("STATUS:")) {
                         const statusText = msg.data.split(":")[1];
-                        const el = document.getElementById('status');
-                        el.innerText = statusText;
-                        if (statusText.includes("Connected")) el.style.color = "#0f0";
+                        updateStatus(statusText);
                     }
                     document.getElementById('qVal').innerText = Math.round(quality * 100);
                     return;
                 }
 
-                // 2. HANDLE VIDEO (Decrypt)
+                // HANDLE DECRYPTION
                 try {
                     const encryptedBytes = new Uint8Array(msg.data);
                     const iv = encryptedBytes.slice(0, 12);
@@ -181,6 +315,21 @@
             ws.onopen = () => sendLoop();
         }
 
+        function updateStatus(text) {
+            const badge = document.getElementById('statusBadge');
+            badge.innerText = text;
+            badge.className = "status-badge"; // reset
+
+            if (text.includes("Connected")) {
+                badge.classList.add("status-ok");
+                badge.innerText = "SECURE LINK";
+            } else if (text.includes("Disconnected")) {
+                badge.classList.add("status-err");
+            } else {
+                badge.classList.add("status-wait");
+            }
+        }
+
         function sendLoop() {
             if (ws.readyState !== 1) return;
             const video = document.getElementById('localVideo');
@@ -188,7 +337,7 @@
             const ctx = canvas.getContext('2d');
 
             if (video.videoWidth > 0) {
-                // Adaptive Scaling
+                // Adaptive Resolution
                 const scale = quality > 0.5 ? 0.5 : 0.25;
                 canvas.width = video.videoWidth * scale;
                 canvas.height = video.videoHeight * scale;
@@ -207,28 +356,27 @@
                     p.set(new Uint8Array(encrypted), 12);
 
                     ws.send(p);
-                    setTimeout(() => requestAnimationFrame(sendLoop), 50);
+                    setTimeout(() => requestAnimationFrame(sendLoop), 50); // ~20 FPS cap
                 }, 'image/jpeg', quality);
             } else {
                 requestAnimationFrame(sendLoop);
             }
         }
 
-        // --- DEMO CONTROLS ---
+        // --- CONTROLS ---
         function forceLag() {
             manualOverride = true;
-            quality = 0.1; // Drop to 10%
+            quality = 0.1;
             document.getElementById('qVal').innerText = "10";
-            document.getElementById('status').innerText = "⚠️ SIMULATED LAG";
-            document.getElementById('status').style.color = "red";
+            updateStatus("LAG DETECTED");
+            document.getElementById('statusBadge').classList.add("status-err");
         }
 
         function fixNetwork() {
             manualOverride = false;
-            quality = 0.85; // Restore
+            quality = 0.85;
             document.getElementById('qVal').innerText = "85";
-            document.getElementById('status').innerText = "✅ Network Stable";
-            document.getElementById('status').style.color = "#0f0";
+            updateStatus("SECURE LINK");
         }
     </script>
 </body>
