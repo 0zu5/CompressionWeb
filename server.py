@@ -10,7 +10,6 @@ import socket
 import qrcode # pip install "qrcode[pil]"
 
 # --- CONFIG ---
-# The server GUI Queue to show status/QR
 gui_queue = queue.Queue()
 connected_count = 0
 
@@ -57,19 +56,50 @@ class ConnectionManager:
             self.pairings[partner] = websocket
             self.waiting_user = None
             await websocket.send_text("STATUS:Connected!")
-            await partner.send_text("STATUS:Connected!")
+            
+            # Use safe send for the partner too
+            await self.safe_send_text(partner, "STATUS:Connected!")
 
+    # --- THE MISSING FUNCTION IS BACK ---
     def get_partner(self, websocket: WebSocket):
         return self.pairings.get(websocket)
 
+    async def safe_send_text(self, socket: WebSocket, message: str):
+        """Safely sends text, ignoring errors if the socket is dead."""
+        try:
+            await socket.send_text(message)
+        except RuntimeError:
+            pass # Socket is already closed
+        except Exception as e:
+            print(f"[Warning] Failed to send message: {e}")
+
+    async def safe_send_bytes(self, socket: WebSocket, data: bytes):
+        """Safely sends bytes, ignoring errors if the socket is dead."""
+        try:
+            await socket.send_bytes(data)
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
     def disconnect(self, websocket: WebSocket):
         global connected_count
+        
+        # 1. Identify Partner
         partner = self.pairings.get(websocket)
+        
+        # 2. Notify Partner (Safely)
         if partner:
-            del self.pairings[partner]
-            asyncio.create_task(partner.send_text("STATUS:Partner Disconnected"))
+            if partner in self.pairings:
+                del self.pairings[partner]
+            
+            # Send notification asynchronously without crashing
+            asyncio.create_task(self.safe_send_text(partner, "STATUS:Partner Disconnected"))
+
+        # 3. Clean up Self
         if websocket in self.pairings:
             del self.pairings[websocket]
+            
         if self.waiting_user == websocket:
             self.waiting_user = None
         
@@ -95,16 +125,19 @@ async def websocket_endpoint(websocket: WebSocket):
             # 2. Relay to Partner
             partner = manager.get_partner(websocket)
             if partner:
-                await partner.send_bytes(data)
+                # Use safe send to prevent server crash
+                await manager.safe_send_bytes(partner, data)
                 
-                # 3. Adaptive Logic (Server Brain)
-                # If packet > 40KB, tell sender to compress more
+                # 3. Adaptive Logic
                 if len(data) > 40000: 
-                    await websocket.send_text("ADAPT:LOW")
+                    await manager.safe_send_text(websocket, "ADAPT:LOW")
                 elif len(data) < 10000:
-                    await websocket.send_text("ADAPT:HIGH")
+                    await manager.safe_send_text(websocket, "ADAPT:HIGH")
 
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"[Error] WebSocket loop error: {e}")
         manager.disconnect(websocket)
 
 def run_gui_loop():
@@ -112,7 +145,6 @@ def run_gui_loop():
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 640, 480)
     
-    # Generate QR Code
     local_ip = get_local_ip()
     try:
         qr_img = generate_qr_overlay(local_ip, 8000)
@@ -127,15 +159,12 @@ def run_gui_loop():
             while not gui_queue.empty(): _ = gui_queue.get_nowait()
         except queue.Empty: pass
 
-        # DRAW GUI
         if connected_count >= 2:
-            # Show "Traffic Flow" Mode
             display_img = np.zeros((480, 640, 3), np.uint8)
             cv2.putText(display_img, "SECURE RELAY ACTIVE", (140, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             cv2.putText(display_img, f"Users Connected: {connected_count}", (200, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
             cv2.putText(display_img, "(Server is Blind to Video)", (180, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
         else:
-            # Show QR Code
             display_img = np.full((480, 640, 3), 255, dtype=np.uint8)
             cv2.putText(display_img, "Scan to Join E2EE Call:", (150, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 2)
             if connected_count == 1:
@@ -152,7 +181,6 @@ def run_gui_loop():
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    # Start Server in Background
     server_thread = threading.Thread(
         target=uvicorn.run, 
         args=(app,), 
@@ -164,6 +192,4 @@ if __name__ == "__main__":
         daemon=True
     )
     server_thread.start()
-    
-    # Run GUI
     run_gui_loop()

@@ -47,7 +47,7 @@
             max-width: 350px;
         }
 
-        input {
+        input[type="text"] {
             width: 100%;
             padding: 12px;
             margin: 15px 0;
@@ -106,7 +106,6 @@
             width: 100%;
             height: 100%;
             object-fit: contain;
-            /* Ensures video isn't stretched */
         }
 
         #localVideo {
@@ -114,7 +113,6 @@
             bottom: 15px;
             right: 15px;
             width: 25%;
-            /* Responsive PIP */
             max-width: 120px;
             border-radius: 8px;
             border: 2px solid rgba(255, 255, 255, 0.2);
@@ -156,6 +154,14 @@
             color: var(--danger);
         }
 
+        .status-slow {
+            background: rgba(239, 68, 68, 0.2);
+            color: #facc15;
+        }
+
+        /* Yellow for slow */
+
+
         .stat-item {
             font-size: 0.9rem;
             color: var(--text-sub);
@@ -168,39 +174,74 @@
             font-size: 1.1rem;
         }
 
-        /* --- CONTROLS --- */
-        .controls {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
+        /* --- NEW NETWORK SLIDER STYLES --- */
+        .controls-card {
+            background: var(--card-bg);
             margin-top: 15px;
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #334155;
         }
 
-        .btn-ctrl {
-            padding: 15px;
-            border: none;
-            border-radius: 10px;
-            font-weight: 700;
-            color: white;
+        .slider-header {
+            margin-bottom: 10px;
+            font-weight: bold;
             font-size: 0.9rem;
-            cursor: pointer;
+            color: var(--text-main);
+        }
+
+        .slider-container {
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 8px;
-            transition: opacity 0.2s;
+            gap: 15px;
         }
 
-        .btn-lag {
-            background: var(--danger);
+        /* The Slider Itself */
+        input[type="range"] {
+            flex-grow: 1;
+            height: 6px;
+            border-radius: 5px;
+            background: #334155;
+            outline: none;
+            -webkit-appearance: none;
+            margin: 0;
+            padding: 0;
+            border: none;
         }
 
-        .btn-fix {
-            background: var(--success);
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+            border: 2px solid #fff;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
         }
 
-        .btn-ctrl:active {
-            opacity: 0.8;
+        .net-label {
+            font-weight: bold;
+            font-size: 0.9rem;
+            min-width: 60px;
+            color: var(--text-sub);
+        }
+
+        .net-val {
+            color: var(--text-sub);
+            font-size: 0.8rem;
+            margin-top: 10px;
+            display: block;
+            text-align: right;
+        }
+
+        #errorLog {
+            color: var(--danger);
+            margin-top: 10px;
+            font-size: 0.8rem;
+            text-align: center;
+            display: none;
         }
     </style>
 </head>
@@ -218,9 +259,11 @@
         <h3>Encrypted Feed (AES-GCM)</h3>
 
         <div class="video-wrapper">
-            <img id="remoteVideo" alt="Waiting for stream..." />
+            <img id="remoteVideo" />
             <video id="localVideo" autoplay playsinline muted></video>
         </div>
+
+        <div id="errorLog"></div>
 
         <div class="hud">
             <div>
@@ -233,24 +276,67 @@
             </div>
         </div>
 
-        <div class="controls">
-            <button class="btn-ctrl btn-lag" onclick="forceLag()">
-                <span>⚠️</span> FORCE LAG
-            </button>
-            <button class="btn-ctrl btn-fix" onclick="fixNetwork()">
-                <span>🚀</span> FIX NETWORK
-            </button>
+        <div class="controls-card">
+            <div class="slider-header">NETWORK BANDWIDTH SIMULATOR</div>
+            <div class="slider-container">
+                <span class="net-label">🐢 Slow</span>
+                <input type="range" id="netSlider" min="0" max="100" value="100" oninput="updateNetwork()">
+                <span class="net-label">🚀 Fast</span>
+            </div>
+            <span class="net-val">Artificial Latency: <span id="latencyVal"
+                    style="color: var(--primary); font-weight: bold;">0</span> ms</span>
         </div>
     </div>
 
     <canvas id="compressor" style="display:none;"></canvas>
 
     <script>
-        // --- LOGIC SAME AS BEFORE ---
         let ws;
         let aesKey;
         let quality = 0.85;
-        let manualOverride = false;
+
+        // --- NEW LATENCY VARIABLES ---
+        let artificialDelay = 0; // Actual delay in ms
+
+        // 1. UPDATE NETWORK FUNCTION (Called by Slider)
+        function updateNetwork() {
+            const val = document.getElementById('netSlider').value;
+
+            // Logic: 
+            // 100 (Right) = 0ms delay (Fast)
+            // 0 (Left) = 1000ms delay (Slow)
+            artificialDelay = (100 - val) * 10;
+
+            document.getElementById('latencyVal').innerText = artificialDelay;
+
+            const statusBadge = document.getElementById('statusBadge');
+            const qVal = document.getElementById('qVal');
+
+            // ADAPTIVE LOGIC DEMO:
+            // If the slider is dragged low (simulating bad network), 
+            // we force the quality down to demonstrate the adaptation.
+            if (val < 40) {
+                quality = 0.1; // Drop to 10%
+                qVal.style.color = "var(--danger)";
+                if (statusBadge.innerText.includes("LINK")) {
+                    statusBadge.innerText = "POOR CONNECTION";
+                    statusBadge.className = "status-badge status-slow";
+                }
+            } else if (val < 70) {
+                quality = 0.5; // Medium
+                qVal.style.color = "#facc15";
+                if (statusBadge.innerText.includes("CONNECTION")) {
+                    updateStatus("SECURE LINK");
+                }
+            } else {
+                quality = 0.85; // High
+                qVal.style.color = "var(--text-main)";
+                if (statusBadge.innerText.includes("CONNECTION")) {
+                    updateStatus("SECURE LINK");
+                }
+            }
+            document.getElementById('qVal').innerText = Math.round(quality * 100);
+        }
 
         async function startCall() {
             const secret = document.getElementById('secretKey').value;
@@ -274,7 +360,7 @@
                 const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360, facingMode: "user" } });
                 document.getElementById('localVideo').srcObject = stream;
             } catch (e) {
-                alert("Camera Error: " + e.message);
+                showError("Camera Error: " + e.message);
                 return;
             }
 
@@ -282,19 +368,12 @@
             ws.binaryType = "arraybuffer";
 
             ws.onmessage = async (msg) => {
-                // HANDLE COMMANDS
+                // IGNORE SERVER TEXT COMMANDS (We are controlling manually via slider now)
                 if (typeof msg.data === "string") {
-                    if (manualOverride) return;
-
-                    if (msg.data === "ADAPT:LOW") {
-                        quality = Math.max(0.1, quality - 0.1);
-                    } else if (msg.data === "ADAPT:HIGH") {
-                        quality = Math.min(0.9, quality + 0.05);
-                    } else if (msg.data.startsWith("STATUS:")) {
+                    if (msg.data.startsWith("STATUS:")) {
                         const statusText = msg.data.split(":")[1];
                         updateStatus(statusText);
                     }
-                    document.getElementById('qVal').innerText = Math.round(quality * 100);
                     return;
                 }
 
@@ -309,7 +388,13 @@
                     );
                     const blob = new Blob([decrypted], { type: 'image/jpeg' });
                     document.getElementById('remoteVideo').src = URL.createObjectURL(blob);
-                } catch (e) { console.error("Decrypt Error", e); }
+
+                    // Clear errors if successful
+                    document.getElementById('errorLog').style.display = "none";
+                } catch (e) {
+                    console.error("Decrypt Error", e);
+                    showError("DECRYPTION FAILED: WRONG KEY?");
+                }
             };
 
             ws.onopen = () => sendLoop();
@@ -318,7 +403,7 @@
         function updateStatus(text) {
             const badge = document.getElementById('statusBadge');
             badge.innerText = text;
-            badge.className = "status-badge"; // reset
+            badge.className = "status-badge";
 
             if (text.includes("Connected")) {
                 badge.classList.add("status-ok");
@@ -330,6 +415,13 @@
             }
         }
 
+        function showError(msg) {
+            const el = document.getElementById('errorLog');
+            el.innerText = msg;
+            el.style.display = "block";
+        }
+
+        // --- MODIFIED SEND LOOP (With Real Lag) ---
         function sendLoop() {
             if (ws.readyState !== 1) return;
             const video = document.getElementById('localVideo');
@@ -337,7 +429,6 @@
             const ctx = canvas.getContext('2d');
 
             if (video.videoWidth > 0) {
-                // Adaptive Resolution
                 const scale = quality > 0.5 ? 0.5 : 0.25;
                 canvas.width = video.videoWidth * scale;
                 canvas.height = video.videoHeight * scale;
@@ -355,28 +446,20 @@
                     p.set(iv, 0);
                     p.set(new Uint8Array(encrypted), 12);
 
-                    ws.send(p);
-                    setTimeout(() => requestAnimationFrame(sendLoop), 50); // ~20 FPS cap
+                    // ACTUAL LAG IMPLEMENTATION:
+                    // We delay the sending of the packet based on the slider
+                    setTimeout(() => {
+                        if (ws.readyState === 1) ws.send(p);
+                    }, artificialDelay);
+
+                    // We also delay the next frame capture. 
+                    // This mimics low bandwidth (throughput) not just latency.
+                    setTimeout(() => requestAnimationFrame(sendLoop), 50 + artificialDelay);
+
                 }, 'image/jpeg', quality);
             } else {
                 requestAnimationFrame(sendLoop);
             }
-        }
-
-        // --- CONTROLS ---
-        function forceLag() {
-            manualOverride = true;
-            quality = 0.1;
-            document.getElementById('qVal').innerText = "10";
-            updateStatus("LAG DETECTED");
-            document.getElementById('statusBadge').classList.add("status-err");
-        }
-
-        function fixNetwork() {
-            manualOverride = false;
-            quality = 0.85;
-            document.getElementById('qVal').innerText = "85";
-            updateStatus("SECURE LINK");
         }
     </script>
 </body>
